@@ -4,5 +4,5 @@ zeep
 openpyxl
 pytz
 requests
-Flask-SQLAlchem
+Flask-SQLAlchemy
 gunicorn
