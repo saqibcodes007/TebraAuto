@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Tebra Automation Tool</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <img src="/img/owl-logo.png" alt="Tebra Automation Tool Logo" class="logo">
+                <div class="title-container">
+                    <h1>🤖 Tebra Automation Tool</h1>
+                    <p class="subtitle">Automated Charge Entry & Payment Posting in Tebra PMS for All Practices!</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="alert-container"></div>
+
+        <!-- Credentials Section -->
+        <div class="card">
+            <h2 class="card-title">Tebra Credentials</h2>
+            <form id="credentials-form">
+                <div class="form-group">
+                    <label for="customer-key">Customer Key:</label>
+                    <input type="password" id="customer-key" name="customer_key" required>
+                </div>
+                <div class="form-group">
+                    <label for="username">Username (email):</label>
+                    <input type="email" id="username" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password:</label>
+                    <input type="password" id="password" name="password" required>
+                </div>
+            </form>
+        </div>
+
+        <!-- File Upload Section -->
+        <div class="card">
+            <h2 class="card-title">Upload Excel File</h2>
+            <div id="file-upload-area" class="file-upload">
+                <p class="file-upload-text">Drag and drop your Excel file here or click to browse</p>
+                <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
+                <p id="file-name" class="file-name hidden"></p>
+            </div>
+            <div id="progress-container" class="progress-container hidden">
+                <div class="progress-bar">
+                    <div id="progress-bar-fill" class="progress-bar-fill"></div>
+                </div>
+            </div>
+            <button id="process-button" class="btn" disabled>Process Charges</button>
+        </div>
+
+        <!-- Results Section -->
+        <div id="results-section" class="card hidden">
+            <h2 class="card-title">Processing Results</h2>
+            <div class="table-responsive">
+                <table id="results-table" class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Excel Row Number</th>
+                            <th>Practice Name</th>
+                            <th>Patient ID</th>
+                            <th>Results</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-table-body">
+                        <!-- Results will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+            <button id="download-button" class="btn btn-success hidden" disabled>Download Output Excel</button>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>Tebra Automation Tool © 2025 | Panacea Smart Solutions | Developed by Saqib Sherwani</p>
+        </div>
+    </footer>
+
+    <script src="/js/main.js"></script>
+</body>
+</html>

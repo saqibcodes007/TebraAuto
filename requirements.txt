@@ -1,0 +1,8 @@
+Flask
+pandas
+zeep
+openpyxl
+pytz
+requests
+Flask-SQLAlchem
+gunicorn
