@@ -1308,8 +1308,14 @@ def run_all_phases_processing_adapted(df_param, actual_headers_map_param, tebra_
             p1_status_msg = ""; patient_name_output_col = actual_headers_map_param.get("Patient Name", "Patient Name")
             try:
                 insurance_results = phase1_fetch_patient_and_insurance(tebra_client_param, tebra_header_param, patient_id_str, practice_name_excel_str, dos_for_insurance_str) # Uses adapted client/header
+                
+                # Update all relevant DataFrame columns with Phase 1 results
                 df_param.loc[index, patient_name_output_col] = insurance_results.get('FetchedPatientName')
-                # ... (set other P1 output columns) ...
+                df_param.loc[index, actual_headers_map_param.get("DOB", "DOB")] = insurance_results.get('FetchedPatientDOB')
+                df_param.loc[index, actual_headers_map_param.get("Insurance", "Insurance")] = insurance_results.get('FetchedInsuranceName')
+                df_param.loc[index, actual_headers_map_param.get("Insurance ID", "Insurance ID")] = insurance_results.get('FetchedInsuranceID')
+                df_param.loc[index, actual_headers_map_param.get("Insurance Status", "Insurance Status")] = insurance_results.get('FetchedInsuranceStatus')
+                
                 if insurance_results.get('SimpleError'): p1_status_msg = f"P1 Error: {insurance_results['SimpleError']}"
                 elif insurance_results.get('FetchedInsuranceStatus') not in ["Active", "Active (Primary)", "Multiple Active Found", None, "", "Ins. Check Skipped (No Valid DOS)"]: p1_status_msg = f"P1 Status: {insurance_results.get('FetchedInsuranceStatus', 'Ins status unknown')}"
                 if p1_status_msg: current_row_messages.append(p1_status_msg)
