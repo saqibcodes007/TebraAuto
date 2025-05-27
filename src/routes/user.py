@@ -920,132 +920,125 @@ def get_encounter_details_phase3(client_obj, header_obj, encounter_id_str, tebra
     return results #
 
 # THIS FUNCTION REPLACES the existing get_total_charge_amount_for_encounter_phase3
-# in your src/routes/user.py file (or wherever it's defined in your Flask app)
+# in your src/routes/user.py file
 
 def get_total_charge_amount_for_encounter_phase3(client_obj, header_obj, target_encounter_id_str,
-                                                 target_patient_id_str, # NEW PARAMETER
-                                                 practice_name_filter_str, 
+                                                 target_patient_id_str,
+                                                 practice_name_filter_str,
                                                  dos_filter_str,
-                                                 list_of_procedure_codes_on_encounter, # NEW PARAMETER
+                                                 list_of_procedure_codes_on_encounter, # Still needed to get one proc for filter
                                                  row_identifier_log):
     """
-    Fetches charges using GetCharges by iterating through procedure codes for a specific encounter,
-    omitting PatientName from API filter and filtering by PatientID and EncounterID in Python.
-    Sums TotalCharges.
+    Fetches charges using GetCharges. Uses the FIRST procedure code from the list
+    for the API filter, assuming this will return all charge lines for the encounter.
+    Then filters by PatientID and EncounterID in Python and sums TotalCharges.
     """
-    results = {'TotalChargeAmount': "0.00", 'SimpleError': None} # Default to 0.00
+    results = {'TotalChargeAmount': "0.00", 'SimpleError': None}
 
-    # Validate essential parameters
-    if not all([target_encounter_id_str, target_patient_id_str, practice_name_filter_str, dos_filter_str, list_of_procedure_codes_on_encounter]):
-        results['SimpleError'] = "Missing required params for GetCharges (EncID, PatientID, PracName, DOS, ProcList)."
+    if not all([target_encounter_id_str, str(target_encounter_id_str).strip() != "-1" if target_encounter_id_str else False,
+                target_patient_id_str,
+                practice_name_filter_str,
+                dos_filter_str,
+                list_of_procedure_codes_on_encounter and len(list_of_procedure_codes_on_encounter) > 0]):
+        results['SimpleError'] = "Missing required params for GetCharges (EncID, PatientID, PracName, DOS, at least one ProcCode)."
         if results['SimpleError']: results['TotalChargeAmount'] = "Error"
-        display_message("error", f"[GetCharges_P3] {row_identifier_log}: {results['SimpleError']}")
+        display_message("error", f"[GetCharges_P3] {row_identifier_log}: {results['SimpleError']}") #
         return results
 
-    display_message("info", f"[GetCharges_P3] {row_identifier_log}: Fetching charges for EncID {target_encounter_id_str}, PatientID {target_patient_id_str}, Procs {list_of_procedure_codes_on_encounter} (Filters: Prac='{practice_name_filter_str}', DOS='{dos_filter_str}', IncludeUnapproved='true')...")
+    # Use only the first procedure code for the API filter
+    representative_proc_code = list_of_procedure_codes_on_encounter[0]
+    display_message("info", f"[GetCharges_P3] {row_identifier_log}: Fetching charges for EncID {target_encounter_id_str}, PatientID {target_patient_id_str} using representative ProcCode {representative_proc_code} (Filters: Prac='{practice_name_filter_str}', DOS='{dos_filter_str}', IncludeUnapproved='true')...") #
 
     cumulative_encounter_total_charges = 0.0
     any_charges_found_for_this_specific_encounter = False
-    api_call_errors = []
 
     try:
-        service_date_api_format = format_datetime_for_api_phase3(dos_filter_str) # Assumes format_datetime_for_api_phase3 is available
+        service_date_api_format = format_datetime_for_api_phase3(dos_filter_str) #
         if not service_date_api_format:
             results['SimpleError'] = f"Invalid DOS '{dos_filter_str}' for GetCharges filter."
             results['TotalChargeAmount'] = "Error"
             return results
 
-        GetChargesReqType = client_obj.get_type('ns0:GetChargesReq')
-        ChargeFilterType = client_obj.get_type('ns0:ChargeFilter')
-        ChargeFieldsToReturnType = client_obj.get_type('ns0:ChargeFieldsToReturn')
+        GetChargesReqType = client_obj.get_type('ns0:GetChargesReq') #
+        ChargeFilterType = client_obj.get_type('ns0:ChargeFilter') #
+        ChargeFieldsToReturnType = client_obj.get_type('ns0:ChargeFieldsToReturn') #
 
-        # Request relevant fields. PatientID is crucial for Python-side filtering.
         charge_fields = ChargeFieldsToReturnType(
             EncounterID=True, TotalCharges=True, ID=True, ProcedureCode=True,
-            PatientID=True, # Make sure to request PatientID
-            UnitCharge=True, Units=True # Good for debugging/verification
+            PatientID=True, UnitCharge=True, Units=True
         )
 
-        for proc_code in list_of_procedure_codes_on_encounter:
-            display_message("debug", f"[GetCharges_P3] {row_identifier_log}: Querying for ProcCode: {proc_code}")
-            charge_filter = ChargeFilterType(
-                PracticeName=str(practice_name_filter_str),
-                FromServiceDate=service_date_api_format,
-                ToServiceDate=service_date_api_format,
-                ProcedureCode=str(proc_code), # Filter by specific procedure code
-                IncludeUnapprovedCharges="true"
-                # PatientName is intentionally omitted from this API filter
-            )
-            request_payload_charges = GetChargesReqType(RequestHeader=header_obj, Fields=charge_fields, Filter=charge_filter)
-            api_response_charges = client_obj.service.GetCharges(request=request_payload_charges)
+        # API call is made ONCE using the representative procedure code
+        charge_filter = ChargeFilterType(
+            PracticeName=str(practice_name_filter_str),
+            FromServiceDate=service_date_api_format,
+            ToServiceDate=service_date_api_format,
+            ProcedureCode=str(representative_proc_code),
+            IncludeUnapprovedCharges="true"
+        )
+        request_payload_charges = GetChargesReqType(RequestHeader=header_obj, Fields=charge_fields, Filter=charge_filter) #
+        api_response_charges = client_obj.service.GetCharges(request=request_payload_charges) #
 
-            if hasattr(api_response_charges, 'ErrorResponse') and api_response_charges.ErrorResponse and api_response_charges.ErrorResponse.IsError:
-                err_msg = f"API Error (GetCharges for Proc {proc_code}): {api_response_charges.ErrorResponse.ErrorMessage}"
-                display_message("error", f"[GetCharges_P3] {row_identifier_log}: {err_msg}")
-                api_call_errors.append(err_msg)
-                continue # Try next procedure code
-            elif hasattr(api_response_charges, 'SecurityResponse') and api_response_charges.SecurityResponse and not api_response_charges.SecurityResponse.Authorized:
-                err_msg = f"API Auth Error (GetCharges for Proc {proc_code}): {api_response_charges.SecurityResponse.SecurityResult}"
-                display_message("error", f"[GetCharges_P3] {row_identifier_log}: {err_msg}")
-                api_call_errors.append(err_msg)
-                continue
+        if hasattr(api_response_charges, 'ErrorResponse') and api_response_charges.ErrorResponse and api_response_charges.ErrorResponse.IsError: #
+            err_msg = f"API Error (GetCharges for Proc {representative_proc_code}): {api_response_charges.ErrorResponse.ErrorMessage}" #
+            display_message("error", f"[GetCharges_P3] {row_identifier_log}: {err_msg}") #
+            results['SimpleError'] = err_msg
+        elif hasattr(api_response_charges, 'SecurityResponse') and api_response_charges.SecurityResponse and not api_response_charges.SecurityResponse.Authorized: #
+            err_msg = f"API Auth Error (GetCharges for Proc {representative_proc_code}): {api_response_charges.SecurityResponse.SecurityResult}" #
+            display_message("error", f"[GetCharges_P3] {row_identifier_log}: {err_msg}") #
+            results['SimpleError'] = err_msg
+        elif hasattr(api_response_charges, 'Charges') and api_response_charges.Charges and \
+             hasattr(api_response_charges.Charges, 'ChargeData') and api_response_charges.Charges.ChargeData: #
+            all_charge_data_list = api_response_charges.Charges.ChargeData #
+            if not isinstance(all_charge_data_list, list):
+                all_charge_data_list = [all_charge_data_list] if all_charge_data_list else []
 
-            if hasattr(api_response_charges, 'Charges') and api_response_charges.Charges and \
-               hasattr(api_response_charges.Charges, 'ChargeData') and api_response_charges.Charges.ChargeData:
-                all_charge_data_list = api_response_charges.Charges.ChargeData
-                if not isinstance(all_charge_data_list, list): 
-                    all_charge_data_list = [all_charge_data_list] if all_charge_data_list else []
-                
-                display_message("debug", f"[GetCharges_P3] {row_identifier_log}: API returned {len(all_charge_data_list)} charge items for Proc {proc_code}.")
+            display_message("debug", f"[GetCharges_P3] {row_identifier_log}: API returned {len(all_charge_data_list)} charge items using representative Proc {representative_proc_code}.") #
 
-                for charge_item in all_charge_data_list:
-                    if charge_item is None: continue
+            for charge_item in all_charge_data_list:
+                if charge_item is None: continue
 
-                    api_item_patient_id = str(getattr(charge_item, 'PatientID', '')).strip()
-                    api_item_encounter_id = str(getattr(charge_item, 'EncounterID', '')).strip()
-                    
-                    # Python-side filtering for the target PatientID and EncounterID
-                    if api_item_patient_id == str(target_patient_id_str).strip() and \
-                       api_item_encounter_id == str(target_encounter_id_str).strip():
-                        
-                        tc_str = getattr(charge_item, 'TotalCharges', None)
-                        display_message("debug", f"[GetCharges_P3] {row_identifier_log}: Matched EncID {api_item_encounter_id}, PtID {api_item_patient_id}, Proc {getattr(charge_item, 'ProcedureCode', 'N/A')}. Raw TotalCharges: '{tc_str}'")
-                        if tc_str is not None and str(tc_str).strip() and str(tc_str).lower() != 'none':
-                            try:
-                                charge_value = float(str(tc_str).strip())
-                                cumulative_encounter_total_charges += charge_value
-                                any_charges_found_for_this_specific_encounter = True
-                                display_message("debug", f"[GetCharges_P3] {row_identifier_log}: Added {charge_value}. New sum: {cumulative_encounter_total_charges}")
-                            except ValueError:
-                                display_message("warning", f"[GetCharges_P3] {row_identifier_log}: Could not parse TotalCharges '{tc_str}' for ChargeID {getattr(charge_item, 'ID','N/A')} on EncID {target_encounter_id_str}, Proc {proc_code}.")
-                        else:
-                            display_message("debug", f"[GetCharges_P3] {row_identifier_log}: TotalCharges is None or empty for matching line (ChargeID {getattr(charge_item, 'ID','N/A')}).")
-            else:
-                display_message("debug",f"[GetCharges_P3] {row_identifier_log}: No 'Charges.ChargeData' structure in API response for Proc {proc_code}.")
-        
-        if api_call_errors: # Consolidate API call errors if any occurred during the loop
-            results['SimpleError'] = "; ".join(api_call_errors)
+                api_item_patient_id = str(getattr(charge_item, 'PatientID', '')).strip()
+                api_item_encounter_id = str(getattr(charge_item, 'EncounterID', '')).strip()
+
+                if api_item_patient_id == str(target_patient_id_str).strip() and \
+                   api_item_encounter_id == str(target_encounter_id_str).strip():
+
+                    tc_str = getattr(charge_item, 'TotalCharges', None)
+                    proc_on_line = getattr(charge_item, 'ProcedureCode', 'N/A')
+                    display_message("debug", f"[GetCharges_P3] {row_identifier_log}: Matched EncID {api_item_encounter_id}, PtID {api_item_patient_id}, ProcOnLine {proc_on_line}. Raw TotalCharges: '{tc_str}'") #
+                    if tc_str is not None and str(tc_str).strip() and str(tc_str).lower() != 'none':
+                        try:
+                            charge_value = float(str(tc_str).strip())
+                            cumulative_encounter_total_charges += charge_value
+                            any_charges_found_for_this_specific_encounter = True
+                            display_message("debug", f"[GetCharges_P3] {row_identifier_log}: Added {charge_value} from line with proc {proc_on_line}. New sum: {cumulative_encounter_total_charges}") #
+                        except ValueError:
+                            display_message("warning", f"[GetCharges_P3] {row_identifier_log}: Could not parse TotalCharges '{tc_str}' for ChargeID {getattr(charge_item, 'ID','N/A')} on EncID {target_encounter_id_str}, ProcOnLine {proc_on_line}.") #
+                    else:
+                        display_message("debug", f"[GetCharges_P3] {row_identifier_log}: TotalCharges is None or empty for matching line (ChargeID {getattr(charge_item, 'ID','N/A')}, ProcOnLine {proc_on_line}).") #
+        else:
+            display_message("debug",f"[GetCharges_P3] {row_identifier_log}: No 'Charges.ChargeData' structure in API response for representative Proc {representative_proc_code}.") #
 
         if any_charges_found_for_this_specific_encounter:
             results['TotalChargeAmount'] = f"{cumulative_encounter_total_charges:.2f}"
-        elif not results['SimpleError']: # No API errors, but no matching charges with value found
-            display_message("warning", f"[GetCharges_P3] {row_identifier_log}: No specific charges with value ultimately found for EncounterID {target_encounter_id_str} after checking all its procedures. Defaulting amount to 0.00.")
+        elif not results['SimpleError']:
+            display_message("warning", f"[GetCharges_P3] {row_identifier_log}: No specific charges with value ultimately found for EncounterID {target_encounter_id_str} and PatientID {target_patient_id_str} after API call. Defaulting amount to 0.00.") #
             results['TotalChargeAmount'] = "0.00"
-        # If there was a SimpleError and no charges found, TotalChargeAmount remains "0.00" (initial) or becomes "Error" below
 
-    except zeep.exceptions.Fault as soap_fault:
+    except zeep.exceptions.Fault as soap_fault: #
         results['SimpleError'] = f"SOAP FAULT (GetCharges): {soap_fault.message}"
     except Exception as e:
         results['SimpleError'] = f"Unexpected error in GetCharges: {type(e).__name__} - {str(e)}"
+        display_message("error", f"[GetCharges_P3] {row_identifier_log}: Exception: {traceback.format_exc()}") #
 
-    if results['SimpleError'] and results['TotalChargeAmount'] == "0.00" : # If error occurred and no charges were summed
-         display_message("error", f"[GetCharges_P3] {row_identifier_log}: Error occurred and no charges summed for EncID {target_encounter_id_str}: {results['SimpleError']}")
-         results['TotalChargeAmount'] = "Error" 
-    # If TotalChargeAmount is still None (e.g. params missing from start), default to "0.00" if no error, or "Error" if error
+    if results['SimpleError'] and results['TotalChargeAmount'] == "0.00" :
+         display_message("error", f"[GetCharges_P3] {row_identifier_log}: Error occurred and no charges summed for EncID {target_encounter_id_str}: {results['SimpleError']}") #
+         results['TotalChargeAmount'] = "Error"
     elif results.get('TotalChargeAmount') is None:
         results['TotalChargeAmount'] = "Error" if results['SimpleError'] else "0.00"
 
-    display_message("info", f"[GetCharges_P3] {row_identifier_log}: Final result for EncID {target_encounter_id_str}: Amount='{results['TotalChargeAmount']}', Error='{results['SimpleError']}'")
+    display_message("info", f"[GetCharges_P3] {row_identifier_log}: Final result for EncID {target_encounter_id_str}: Amount='{results['TotalChargeAmount']}', Error='{results['SimpleError']}'") #
     return results
 
 # --- ⚙️ PART 5: Main Processing Loop (Adapted from Colab) ---
