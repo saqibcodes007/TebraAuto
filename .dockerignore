@@ -1,0 +1,15 @@
+.dockerignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env/
+.venv/
+*.egg-info/
+.git/
+.gitignore
+*.DS_Store
+temp_files/ 
