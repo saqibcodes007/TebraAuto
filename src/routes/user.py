@@ -17,7 +17,8 @@ import pytz # For timezone handling if needed by Tebra functions
 
 user_bp = Blueprint('user_bp', __name__)
 
-UPLOAD_FOLDER = 'temp_files'
+# Use /tmp for Azure's ephemeral storage, otherwise use a local folder
+UPLOAD_FOLDER = '/tmp' if os.path.exists('/tmp') else 'temp_files'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
