@@ -14,9 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Make sure your .dockerignore file excludes .venv, __pycache__, etc.
 COPY . .
 
-# Make port 8000 available to the world outside this container
-# Gunicorn will bind to this port. Azure Container Apps will map an external port to this.
-EXPOSE 8000
+# Make port 5000 available to the world outside this container
+# This MUST match the --bind port and your Azure Ingress Target Port
+EXPOSE 5000
 
 # Define environment variable for Gunicorn timeout (e.g., 5 minutes)
 # You can also set this in Azure Container App configuration
@@ -24,5 +24,5 @@ ENV GUNICORN_TIMEOUT 300
 
 # Run gunicorn when the container launches
 # It will look for an 'app' instance in a file named 'main.py'.
-# Ensure your main.py correctly defines the Flask 'app' instance.
-CMD ["gunicorn", "--workers", "1", "--timeout", "$GUNICORN_TIMEOUT", "--bind", "0.0.0.0:8000", "main:app"]
+# Change the port in --bind to 5000
+CMD ["gunicorn", "--workers", "1", "--timeout", "$GUNICORN_TIMEOUT", "--bind", "0.0.0.0:5000", "main:app"]
