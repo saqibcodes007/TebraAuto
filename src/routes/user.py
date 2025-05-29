@@ -21,8 +21,7 @@ user_bp = Blueprint('user_bp', __name__)
 def health_check():
     return "OK", 200
 
-# Use /tmp for Azure's ephemeral storage, otherwise use a local folder
-UPLOAD_FOLDER = '/tmp' if os.path.exists('/tmp') else 'temp_files'
+UPLOAD_FOLDER = 'temp_files'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
@@ -1512,20 +1511,56 @@ def process_file_route():
         processed_df_to_save.to_excel(processed_filepath, index=False) #
         display_message("info", f"✅ Processed data saved to '{processed_filepath}'") #
 
+        # ... (previous code including processed_df_to_save.to_excel and display_message) ...
+
         session['processed_file_path'] = processed_filepath
         session['processed_file_download_name'] = f"{base_output_filename}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
 
-        return jsonify(summary_stats), 200
+        # Solution 3: Send a minimal JSON response
+        # The full 'summary_stats' contains a potentially large 'results' array.
+        # We will send only the counts and a success message.
+        # The user will get detailed row-by-row results from the downloaded Excel file.
+        
+        minimal_summary = {
+            "total_rows": summary_stats.get("total_rows"),
+            "encounters_created": summary_stats.get("encounters_created"),
+            "payments_posted": summary_stats.get("payments_posted"),
+            "failed_rows": summary_stats.get("failed_rows"),
+            "message": "Processing complete. Download the Excel file for detailed results.",
+            "download_ready": True # Add a flag the frontend can use
+        }
+        
+        display_message("info", f"Sending minimal summary to frontend: {minimal_summary}")
+        return jsonify(minimal_summary), 200
 
     except zeep.exceptions.Fault as soap_fault: #
         display_message("error", f"SOAP FAULT during processing: {soap_fault.message}")
+        # Add import traceback at the top of your file if not already there
+        # import traceback
         if soap_fault.detail is not None:
              display_message("error", f"SOAP Detail: {zeep.helpers.serialize_object(soap_fault.detail)}")
         return jsonify({"error": f"Tebra API SOAP Fault: {soap_fault.message}. Check server logs."}), 500
     except Exception as e:
         display_message("error", f"An error occurred during processing: {e}") #
+        # Add import traceback at the top of your file if not already there
+        # import traceback
         display_message("error", f"Stack trace: {traceback.format_exc()}") #
         return jsonify({"error": f"An unexpected error occurred: {str(e)}. Check server logs."}), 500
+
+    #     session['processed_file_path'] = processed_filepath
+    #     session['processed_file_download_name'] = f"{base_output_filename}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
+
+    #     return jsonify(summary_stats), 200
+
+    # except zeep.exceptions.Fault as soap_fault: #
+    #     display_message("error", f"SOAP FAULT during processing: {soap_fault.message}")
+    #     if soap_fault.detail is not None:
+    #          display_message("error", f"SOAP Detail: {zeep.helpers.serialize_object(soap_fault.detail)}")
+    #     return jsonify({"error": f"Tebra API SOAP Fault: {soap_fault.message}. Check server logs."}), 500
+    # except Exception as e:
+    #     display_message("error", f"An error occurred during processing: {e}") #
+    #     display_message("error", f"Stack trace: {traceback.format_exc()}") #
+    #     return jsonify({"error": f"An unexpected error occurred: {str(e)}. Check server logs."}), 500
 
 @user_bp.route('/api/download', methods=['GET'])
 def download_file_route():
