@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const processButton = document.getElementById('process-button');
     const downloadButton = document.getElementById('download-button');
     const resultsSection = document.getElementById('results-section');
-    const resultsTable = document.getElementById('results-table');
+    const resultsTable = document.getElementById('results-table'); // Keep for potential future use or hiding
     const resultsTableBody = document.getElementById('results-table-body');
     const alertContainer = document.getElementById('alert-container');
     const progressContainer = document.getElementById('progress-container');
@@ -74,6 +74,10 @@ document.addEventListener('DOMContentLoaded', function() {
         // Show progress and disable button
         progressContainer.classList.remove('hidden');
         processButton.disabled = true;
+        // Hide results section and download button initially for new processing
+        resultsSection.classList.add('hidden');
+        downloadButton.classList.add('hidden');
+        downloadButton.disabled = true;
         
         // Create form data
         const formData = new FormData();
@@ -86,7 +90,7 @@ document.addEventListener('DOMContentLoaded', function() {
         let progress = 0;
         const progressInterval = setInterval(() => {
             progress += 5;
-            if (progress > 90) clearInterval(progressInterval);
+            if (progress > 90) clearInterval(progressInterval); // Stop at 90 to show completion from backend
             progressBarFill.style.width = `${progress}%`;
         }, 300);
         
@@ -99,7 +103,13 @@ document.addEventListener('DOMContentLoaded', function() {
             clearInterval(progressInterval);
             
             if (!response.ok) {
-                throw new Error('Network response was not ok');
+                // Try to parse error response as JSON, otherwise use status text
+                return response.json().catch(() => {
+                    throw new Error(`Network response was not ok: ${response.statusText} (Status: ${response.status})`);
+                }).then(errData => {
+                    // If backend sends a JSON error object like {"error": "message"}
+                    throw new Error(errData.error || `Network response was not ok: ${response.statusText} (Status: ${response.status})`);
+                });
             }
             return response.json();
         })
@@ -107,30 +117,46 @@ document.addEventListener('DOMContentLoaded', function() {
             // Complete progress bar
             progressBarFill.style.width = '100%';
             
-            // Display results
-            displayResults(data);
+            // Display a message in the results section instead of a table
+            displayResultsMessage(data.message); // Use the message from minimal_summary
             
-            // Show success message
-            showAlert('success', `Successfully processed ${data.total_rows} rows. Created ${data.encounters_created} encounters. Posted ${data.payments_posted} payments. ${data.failed_rows} rows failed.`);
+            // Show success message (or the message from the backend if more specific)
+            if (data.message) {
+                 showAlert('success', data.message);
+            } else {
+                // Fallback if data.message is not present, using other fields
+                showAlert('success', `Successfully processed ${data.total_rows} rows. Created ${data.encounters_created} encounters. Posted ${data.payments_posted} payments. ${data.failed_rows} rows failed.`);
+            }
             
-            // Enable download button
-            downloadButton.disabled = false;
-            downloadButton.classList.remove('hidden');
+            // Enable download button if download_ready is true (or if backend sends any success)
+            if (data.download_ready || (data.total_rows !== undefined)) { // Check if download_ready or if it's old format with total_rows
+                downloadButton.disabled = false;
+                downloadButton.classList.remove('hidden');
+            } else {
+                downloadButton.disabled = true;
+                downloadButton.classList.add('hidden');
+            }
             
-            // Reset process button
+            // Reset process button after a short delay
             setTimeout(() => {
                 progressContainer.classList.add('hidden');
                 progressBarFill.style.width = '0%';
-                processButton.disabled = false;
+                processButton.disabled = false; 
             }, 1000);
         })
         .catch(error => {
-            clearInterval(progressInterval);
-            progressContainer.classList.add('hidden');
-            processButton.disabled = false;
+            clearInterval(progressInterval); // Ensure interval is cleared on error too
+            progressBarFill.style.width = '100%'; // Show full progress bar even on error, then hide
+            
+            setTimeout(() => {
+                progressContainer.classList.add('hidden');
+                progressBarFill.style.width = '0%';
+            }, 1000);
+            
+            processButton.disabled = false; // Re-enable process button
             
             console.error('Error:', error);
-            showAlert('danger', 'An error occurred while processing the file. Please try again.');
+            showAlert('danger', error.message || 'An error occurred while processing the file. Please try again.');
         });
     });
     
@@ -139,7 +165,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/download')
             .then(response => {
                 if (!response.ok) {
-                    throw new Error('Network response was not ok');
+                    throw new Error('Network response was not ok during download.');
                 }
                 return response.blob();
             })
@@ -149,7 +175,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 a.style.display = 'none';
                 a.href = url;
                 
-                // Get current date for filename
                 const date = new Date();
                 const dateString = date.toISOString().split('T')[0];
                 
@@ -157,70 +182,56 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
+                document.body.removeChild(a); // Clean up the link
             })
             .catch(error => {
-                console.error('Error:', error);
+                console.error('Error downloading file:', error);
                 showAlert('danger', 'An error occurred while downloading the file. Please try again.');
             });
     });
     
-    // Display Results in Table
-    function displayResults(data) {
+    // Modified displayResults to show a message instead of a table
+    function displayResultsMessage(message) {
         resultsSection.classList.remove('hidden');
-        resultsTableBody.innerHTML = '';
-        
-        data.results.forEach(row => {
-            const tr = document.createElement('tr');
-            
-            // Excel Row Number
-            const tdRowNum = document.createElement('td');
-            tdRowNum.textContent = row.row_number;
-            tr.appendChild(tdRowNum);
-            
-            // Practice Name
-            const tdPractice = document.createElement('td');
-            tdPractice.textContent = row.practice_name;
-            tr.appendChild(tdPractice);
-            
-            // Patient ID
-            const tdPatientId = document.createElement('td');
-            tdPatientId.textContent = row.patient_id;
-            tr.appendChild(tdPatientId);
-            
-            // Results
-            const tdResults = document.createElement('td');
-            tdResults.textContent = row.results;
-            
-            // Add appropriate status class
-            if (row.results.includes('Error') || row.results.includes('Failed')) {
-                tdResults.classList.add('status-error');
-            } else if (row.results.includes('Warning')) {
-                tdResults.classList.add('status-warning');
+        resultsTableBody.innerHTML = ''; // Clear any old table content
+
+        // If you want to hide the table structure itself and just show a message in the section
+        if (resultsTable) {
+            resultsTable.classList.add('hidden'); // Hide the actual table
+        }
+
+        // Create a paragraph for the message if one doesn't exist, or update existing one
+        let messageElement = document.getElementById('results-message-area');
+        if (!messageElement) {
+            messageElement = document.createElement('p');
+            messageElement.id = 'results-message-area';
+            messageElement.style.textAlign = 'center';
+            messageElement.style.padding = '20px';
+            // Insert it before the table if table exists, or just append to section
+            if (resultsTable && resultsTable.parentNode === resultsSection) {
+                 resultsSection.insertBefore(messageElement, resultsTable);
             } else {
-                tdResults.classList.add('status-success');
+                 resultsSection.appendChild(messageElement);
             }
-            
-            tr.appendChild(tdResults);
-            
-            resultsTableBody.appendChild(tr);
-        });
+        }
         
-        // Scroll to results
+        messageElement.textContent = message || "Processing complete. Download the Excel file for detailed results.";
+        
         resultsSection.scrollIntoView({ behavior: 'smooth' });
     }
     
     // Alert Display
     function showAlert(type, message) {
-        const alert = document.createElement('div');
-        alert.className = `alert alert-${type}`;
-        alert.textContent = message;
+        const alertDiv = document.createElement('div'); // Renamed to avoid conflict
+        alertDiv.className = `alert alert-${type}`;
+        alertDiv.textContent = message;
         
-        alertContainer.innerHTML = '';
-        alertContainer.appendChild(alert);
+        alertContainer.innerHTML = ''; // Clear previous alerts
+        alertContainer.appendChild(alertDiv);
         
         // Auto-dismiss after 5 seconds
         setTimeout(() => {
-            alert.remove();
+            alertDiv.remove();
         }, 5000);
     }
 });
