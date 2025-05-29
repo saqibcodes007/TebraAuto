@@ -17,6 +17,10 @@ import pytz # For timezone handling if needed by Tebra functions
 
 user_bp = Blueprint('user_bp', __name__)
 
+@user_bp.route('/health', methods=['GET'])
+def health_check():
+    return "OK", 200
+
 # Use /tmp for Azure's ephemeral storage, otherwise use a local folder
 UPLOAD_FOLDER = '/tmp' if os.path.exists('/tmp') else 'temp_files'
 if not os.path.exists(UPLOAD_FOLDER):
