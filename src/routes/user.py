@@ -15,15 +15,28 @@ import re
 from collections import defaultdict
 import pytz # For timezone handling if needed by Tebra functions
 
+import threading # For background tasks
+import uuid      # For unique task IDs
+import json      # For writing status to file
+
 user_bp = Blueprint('user_bp', __name__)
 
 @user_bp.route('/health', methods=['GET'])
 def health_check():
     return "OK", 200
 
-UPLOAD_FOLDER = 'temp_files'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+UPLOAD_FOLDER = '/tmp' if os.path.exists('/tmp') else 'temp_files'
+if not os.path.exists(UPLOAD_FOLDER) and not os.path.exists('/tmp'): # Only try to make if not /tmp
+    try:
+        os.makedirs(UPLOAD_FOLDER)
+    except OSError as e:
+        # Handle error if directory creation fails and it's not because it already exists
+        if e.errno != errno.EEXIST: # errno.EEXIST means "File exists"
+            display_message("error", f"Could not create UPLOAD_FOLDER {UPLOAD_FOLDER}: {e}")
+            # Decide on fallback or exit strategy if UPLOAD_FOLDER is critical and cannot be created
+        # If it's /tmp, we expect it to exist in Azure, so no need to create it.
+elif os.path.exists('/tmp'):
+     UPLOAD_FOLDER = '/tmp' # Ensure UPLOAD_FOLDER is /tmp if /tmp exists
 
 # --- Helper: Display Message (from Colab PART 3) ---
 def display_message(level, message): #
@@ -75,6 +88,89 @@ def build_request_header_adapted(credentials, client): #
         display_message("error", f"❌ Error building request header: {e}") #
         display_message("error", "Ensure the WSDL loaded correctly and 'ns0:RequestHeader' is the correct type.") #
         return None
+
+# This function will run in a background thread
+def background_task_processor(input_filepath, task_id, credentials_dict, wsdl_url, original_filename_for_download):
+    display_message("info", f"[Task {task_id}] Background processing started for {input_filepath}")
+    
+    status_filepath = os.path.join(UPLOAD_FOLDER, f"{task_id}.status")
+    output_filepath = "" # Will be set after processing
+
+    try:
+        # --- Re-initialize API client and header for the thread ---
+        # This is important because Zeep clients might not be thread-safe
+        # or might rely on thread-local data.
+        
+        # Simulate getting a new client and header (as in process_file_route)
+        # For simplicity, we pass credentials_dict and wsdl_url
+        # In a more robust system, you might have a thread-safe way to get clients/headers
+        
+        # For this example, let's assume we can re-use the core logic by passing client/header
+        # or by re-creating them. Re-creating is safer for threads.
+        
+        thread_tebra_client = create_api_client_adapted(wsdl_url)
+        if not thread_tebra_client:
+            raise Exception("Background task: Failed to connect to Tebra API.")
+        
+        thread_tebra_header = build_request_header_adapted(credentials_dict, thread_tebra_client)
+        if not thread_tebra_header:
+            raise Exception("Background task: Failed to build Tebra API request header.")
+
+        # --- Read the saved file and process ---
+        with open(input_filepath, 'rb') as f_stream: # Read the saved uploaded file
+            # We need to pass a file-like object to validate_spreadsheet_adapted
+            # For this, we can use io.BytesIO if validate_spreadsheet_adapted expects it
+            # Or, if validate_spreadsheet_adapted can take a filepath, adjust accordingly.
+            # Assuming it takes a stream:
+            file_stream_for_validation = io.BytesIO(f_stream.read())
+
+        # Validate the spreadsheet (using the stream from the saved file)
+        # Assuming original_filename isn't strictly needed by validate_spreadsheet_adapted for validation itself,
+        # or pass a placeholder if it is.
+        df, actual_column_headers_map, validation_errors = validate_spreadsheet_adapted(file_stream_for_validation, "uploaded_file.xlsx") # Pass a generic name
+        file_stream_for_validation.close()
+
+        if df is None or validation_errors:
+            raise Exception(f"Background task: File validation failed: {'; '.join(validation_errors)}")
+
+        processed_df, summary_stats_from_processing = run_all_phases_processing_adapted(df, actual_column_headers_map, thread_tebra_client, thread_tebra_header)
+        
+        # --- Save the processed file ---
+        # Use task_id for a unique output filename to avoid collisions
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_output_filename = os.path.splitext(original_filename_for_download)[0] # Get original name without extension
+        processed_filename_for_server = f"Processed_{base_output_filename}_{task_id}_{timestamp}.xlsx"
+        output_filepath = os.path.join(UPLOAD_FOLDER, processed_filename_for_server)
+
+        if 'original_excel_row_num' in processed_df.columns:
+            processed_df_to_save = processed_df.drop(columns=['original_excel_row_num'], errors='ignore')
+        else:
+            processed_df_to_save = processed_df
+        
+        processed_df_to_save.to_excel(output_filepath, index=False)
+        display_message("info", f"[Task {task_id}] ✅ Processed data saved to '{output_filepath}'")
+
+        # Write success status
+        with open(status_filepath, 'w') as f_status:
+            json.dump({"status": "completed", "output_filename": processed_filename_for_server, "original_download_name": f"Processed_{base_output_filename}_{timestamp}.xlsx"}, f_status)
+        display_message("info", f"[Task {task_id}] Status file written: completed")
+
+    except Exception as e:
+        display_message("error", f"[Task {task_id}] Error during background processing: {e}")
+        tb_str = traceback.format_exc()
+        display_message("error", f"[Task {task_id}] Traceback: {tb_str}")
+        # Write error status
+        with open(status_filepath, 'w') as f_status:
+            json.dump({"status": "error", "message": str(e)}, f_status)
+        display_message("info", f"[Task {task_id}] Status file written: error")
+    finally:
+        # Clean up the original uploaded temp file for this task
+        if os.path.exists(input_filepath):
+            try:
+                os.remove(input_filepath)
+                display_message("info", f"[Task {task_id}] Cleaned up temporary input file: {input_filepath}")
+            except Exception as e_remove:
+                display_message("error", f"[Task {task_id}] Error cleaning up temp input file {input_filepath}: {e_remove}")
 
 # --- 📄 PART 3 Adaptations (File Upload, Validation) ---
 # MODIFIED EXPECTED_COLUMNS_CONFIG from tebra_automation_tool_v2.py
@@ -1462,13 +1558,47 @@ def process_file_route():
     if not all([customer_key, username, password]):
         return jsonify({"error": "Missing Tebra credentials"}), 400
 
-    escaped_password = escape_xml_special_chars(password) #
+    # --- Save the uploaded file temporarily with a unique name ---
+    task_id = str(uuid.uuid4())
+    original_filename = file.filename
+    temp_input_filename = f"{task_id}_{original_filename}"
+    temp_input_filepath = os.path.join(UPLOAD_FOLDER, temp_input_filename)
     
-    credentials = { #
+    try:
+        file.save(temp_input_filepath)
+        display_message("info", f"[Task {task_id}] File saved temporarily to {temp_input_filepath}")
+    except Exception as e_save:
+        display_message("error", f"Error saving uploaded file for task {task_id}: {e_save}")
+        return jsonify({"error": "Failed to save uploaded file for processing."}), 500
+
+    # --- Prepare credentials for the background thread ---
+    # DO NOT pass the raw request password directly if you can avoid it long-term.
+    # For this example, we re-escape it. Consider secure credential handling for production.
+    escaped_password = escape_xml_special_chars(password)
+    credentials_for_thread = {
         "CustomerKey": customer_key,
         "User": username,
-        "Password": escaped_password
+        "Password": escaped_password # The escaped password
     }
+
+    # --- Start the background processing in a new thread ---
+    thread = threading.Thread(target=background_task_processor, args=(
+        temp_input_filepath, 
+        task_id, 
+        credentials_for_thread, 
+        TEBRA_WSDL_URL, # Assuming TEBRA_WSDL_URL is globally defined
+        original_filename # Pass original filename for constructing download name
+    ))
+    thread.daemon = True # Allows main program to exit even if threads are running (Gunicorn might handle this differently)
+    thread.start()
+    display_message("info", f"[Task {task_id}] Background processing thread started.")
+
+    # --- Immediately return a 202 Accepted response with the task ID ---
+    return jsonify({
+        "message": "File upload accepted. Processing has started in the background.",
+        "task_id": task_id,
+        "status_check_url": f"/api/status/{task_id}" # Inform client where to check status
+    }), 202 # HTTP 202 Accepted
 
     tebra_client = create_api_client_adapted(TEBRA_WSDL_URL) #
     if not tebra_client:
@@ -1562,17 +1692,83 @@ def process_file_route():
     #     display_message("error", f"Stack trace: {traceback.format_exc()}") #
     #     return jsonify({"error": f"An unexpected error occurred: {str(e)}. Check server logs."}), 500
 
-@user_bp.route('/api/download', methods=['GET'])
-def download_file_route():
-    processed_filepath = session.get('processed_file_path')
-    processed_filename_for_download = session.get('processed_file_download_name', 'Processed_Tebra_Data.xlsx') #
+@user_bp.route('/api/status/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    status_filename = f"{task_id}.status"
+    status_filepath = os.path.join(UPLOAD_FOLDER, status_filename)
+    
+    display_message("debug", f"[Task {task_id}] Status check initiated. Looking for: {status_filepath}")
 
-    if not processed_filepath or not os.path.exists(processed_filepath):
-        return jsonify({"error": "Processed file not found or path not in session. Please process a file first."}), 404
+    if os.path.exists(status_filepath):
+        try:
+            with open(status_filepath, 'r') as f_status:
+                status_data = json.load(f_status)
+            display_message("info", f"[Task {task_id}] Status file found. Data: {status_data}")
+            # You might want to consider cleaning up the status file here if it's "completed" or "error",
+            # but be careful if multiple status checks could happen. For now, let's leave it.
+            return jsonify(status_data), 200
+        except Exception as e_read_status:
+            display_message("error", f"[Task {task_id}] Error reading status file {status_filepath}: {e_read_status}")
+            return jsonify({"status": "error", "message": "Could not read status file."}), 500
+    else:
+        # If status file doesn't exist yet, assume it's still pending
+        display_message("info", f"[Task {task_id}] Status file not found. Assuming pending.")
+        return jsonify({"status": "pending", "message": "Processing is ongoing or task ID is invalid."}), 202 # HTTP 202 Accepted (still processing)
+
+@user_bp.route('/api/download_processed_file/<filename_on_server>', methods=['GET'])
+def download_processed_file(filename_on_server):
+    # Basic sanitization to prevent directory traversal
+    if ".." in filename_on_server or "/" in filename_on_server or "\\" in filename_on_server:
+        display_message("error", f"Download attempt with invalid filename: {filename_on_server}")
+        return jsonify({"error": "Invalid filename."}), 400
+
+    file_to_download_path = os.path.join(UPLOAD_FOLDER, filename_on_server)
+    display_message("info", f"Download attempt for server file: {file_to_download_path}")
+
+    # Try to get the original user-friendly download name from the corresponding .status file
+    desired_download_name = filename_on_server # Default to the server filename
+    task_id_from_filename = None
+    if filename_on_server.startswith("Processed_") and "_" in filename_on_server:
+        parts = filename_on_server.split('_')
+        # Assuming format "Processed_OriginalName_taskid_timestamp.xlsx"
+        # The task_id would be the third part from the end if split by '_' before the timestamp
+        if len(parts) >= 4: # Need at least Processed, Original, taskid, timestamp.xlsx
+            task_id_from_filename = parts[-3] # Heuristic, adjust if filename format is different
+
+    if task_id_from_filename:
+        status_filepath_for_download = os.path.join(UPLOAD_FOLDER, f"{task_id_from_filename}.status")
+        display_message("debug", f"Looking for status file for download naming: {status_filepath_for_download}")
+        if os.path.exists(status_filepath_for_download):
+            try:
+                with open(status_filepath_for_download, 'r') as f_s:
+                    status_data = json.load(f_s)
+                    if status_data.get("original_download_name"):
+                        desired_download_name = status_data["original_download_name"]
+                        display_message("info", f"Using original download name from status file: {desired_download_name}")
+            except Exception as e_status_read:
+                display_message("warning", f"Could not read original_download_name from status file {status_filepath_for_download}: {e_status_read}")
+        else:
+            display_message("warning", f"Status file not found for task ID {task_id_from_filename}, using server filename for download.")
+    else:
+        display_message("warning", "Could not determine task_id from filename to fetch original_download_name, using server filename.")
+
+
+    if not os.path.exists(file_to_download_path):
+        display_message("error", f"Download Error: File not found at path '{file_to_download_path}'")
+        return jsonify({"error": "Processed file not found at the specified path."}), 404
 
     try:
-        return send_file(processed_filepath, as_attachment=True, download_name=processed_filename_for_download) #
-    except Exception as e: #
-        display_message("error", f"Error during file download: {e}")
-        return jsonify({"error": str(e)}), 500
-    # Optional cleanup can be added here if desired, as in the original commented-out block.
+        display_message("info", f"Attempting to send file: {file_to_download_path} as attachment name: {desired_download_name}")
+        response = send_file(file_to_download_path, as_attachment=True, download_name=desired_download_name)
+        
+        # Optional: Cleanup after sending. This is complex with threads and web servers.
+        # For now, files in /tmp will be cleaned when the container restarts.
+        # If you need immediate cleanup, it would require more advanced handling.
+        # e.g., @response.call_on_close could be used if Flask version supports it and if it works reliably in Gunicorn.
+
+        return response
+    except Exception as e:
+        display_message("error", f"Error during file download for {file_to_download_path}: {e}")
+        tb_str = traceback.format_exc()
+        display_message("error", f"Traceback for download error: {tb_str}")
+        return jsonify({"error": "An error occurred while sending the file."}), 500
