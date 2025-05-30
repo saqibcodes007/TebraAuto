@@ -25,4 +25,8 @@ ENV GUNICORN_TIMEOUT=300
 # Run gunicorn when the container launches
 # It will look for an 'app' instance in a file named 'main.py'.
 # Change the port in --bind to 5000
-CMD gunicorn --workers 2 --timeout $GUNICORN_TIMEOUT --bind "0.0.0.0:5000" main:app
+# ... (all previous lines are correct) ...
+
+# Use the "shell" form of CMD so that the $GUNICORN_TIMEOUT variable is processed correctly.
+# Increase graceful timeout even more
+CMD gunicorn --workers 3 --timeout $GUNICORN_TIMEOUT --graceful-timeout 90 --bind "0.0.0.0:5000" --access-logfile - --error-logfile - main:app
