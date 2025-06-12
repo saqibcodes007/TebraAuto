@@ -293,4 +293,8 @@ The application expects an Excel file (`.xlsx` or `.xls`) containing a sheet nam
 * **Inflated/Incorrect Charge Amounts:** (Same as original README - verify `get_total_charge_amount_for_encounter_phase3` logic).
 
 ---
-*Developed by Saqib Sherwani for Panacea Smart Solutions LLC
+<p align="center">
+  Developed by Saqib Sherwani
+  <br>
+  Copyright © 2025 • All Rights Reserved
+</p>
