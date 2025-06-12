@@ -160,22 +160,15 @@ input[type="email"] {
   color: var(--primary-color);
 }
 
-.progress-container {
-  margin: 20px 0;
+/* ADD THESE: New styles for the Bootstrap progress bar */
+.progress {
+    border-radius: 10px;
+    padding: 2px;
 }
-
 .progress-bar {
-  height: 10px;
-  background-color: #eee;
-  border-radius: 5px;
-  overflow: hidden;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background-color: var(--primary-color);
-  width: 0%;
-  transition: width 0.3s;
+    background: linear-gradient(90deg, var(--primary-glow), var(--secondary-glow));
+    border-radius: 8px;
+    transition: width 0.4s ease-in-out; /* Adds a smooth animation */
 }
 
 .results-table {
