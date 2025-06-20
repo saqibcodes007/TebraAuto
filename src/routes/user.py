@@ -46,6 +46,76 @@ def display_message(level, message): #
 # --- Tebra WSDL URL (from Colab PART 2) ---
 TEBRA_WSDL_URL = "https://webservice.kareo.com/services/soap/2.1/KareoServices.svc?singleWsdl" #
 
+def normalize_practice_name(name_from_excel):
+    """
+    Normalizes various user inputs for practice names to a specific,
+    Tebra-accepted format.
+    """
+    if not isinstance(name_from_excel, str):
+        return ''
+    clean_name = name_from_excel.strip().lower()
+    # Normalize based on keywords or common abbreviations
+    if 'pedia' in clean_name or 'west' in clean_name or clean_name == 'pw':
+        return 'PEDIATRICS WEST'
+    if 'pamela' in clean_name or 'johnson' in clean_name:
+        return 'PAMELA JOHNSON PT'
+    if 'berlin' in clean_name or clean_name == 'nbms':
+        return 'New Berlin Medical Services LLC'
+    if 'person' in clean_name or 'surgical' in clean_name or clean_name == 'psa':
+        return 'PERSON SURGICAL ASSOCIATES'
+    # Return original name if no match, allowing downstream error handling to catch it
+    return name_from_excel
+
+def normalize_provider_name(name_from_excel):
+    """
+    Normalizes various user inputs for provider names to a specific,
+    Tebra-accepted format.
+    """
+    if not isinstance(name_from_excel, str):
+        return ''
+
+    # The list of canonical provider names Tebra accepts
+    TEBRA_ACCEPTED_PROVIDERS = {
+        'mathew george': 'MATHEW GEORGE',
+        'lorelle manion': 'LORELLE MANION',
+        'megan hambrook': 'MEGAN HAMBROOK',
+        'robert matteucci': 'ROBERT MATTEUCCI',
+        'eric hillmann': 'ERIC HILLMANN',
+        'tyler yapp': 'TYLER YAPP',
+        'jeffrey follansbee': 'JEFFREY FOLLANSBEE',
+        'ahmed elborno': 'AHMED ELBORNO',
+        'jonathon printz': 'JONATHON PRINTZ',
+        'ryan kehoe': 'RYAN KEHOE',
+        'iqbal khan': 'IQBAL KHAN',
+        'thomas stauss': 'THOMAS STAUSS',
+        'pamela johnson': 'PAMELA JOHNSON',
+        'new berlin medical services': 'NEW BERLIN MEDICAL SERVICES'
+    }
+
+    clean_name = name_from_excel.strip().lower()
+
+    # Remove common titles and suffixes like MD, DO, LLC, etc.
+    clean_name = re.sub(r',?\s*(md|do|pa|np|lcsw|msw|inc|llc|pc)$', '', clean_name, flags=re.IGNORECASE)
+
+    # Handle "LastName, FirstName" format
+    if ',' in clean_name:
+        parts = [p.strip() for p in clean_name.split(',')]
+        if len(parts) == 2:
+            clean_name = f"{parts[1]} {parts[0]}"
+
+    # Check for a direct match with the cleaned-up name
+    if clean_name in TEBRA_ACCEPTED_PROVIDERS:
+        return TEBRA_ACCEPTED_PROVIDERS[clean_name]
+
+    # Check for a partial match where all words from input are in a key
+    for key, value in TEBRA_ACCEPTED_PROVIDERS.items():
+        input_words = clean_name.split()
+        if input_words and all(part in key for part in input_words):
+            return value
+
+    # Return the original name if no confident match is found
+    return name_from_excel
+
 # --- 🔐 PART 2 Adaptations (Credentials & API Client) ---
 def escape_xml_special_chars(password): #
     """Escapes special XML characters in the password."""
@@ -92,65 +162,84 @@ def build_request_header_adapted(credentials, client): #
 # This function will run in a background thread
 def background_task_processor(input_filepath, task_id, credentials_dict, wsdl_url, original_filename_for_download):
     display_message("info", f"[Task {task_id}] Background processing started for {input_filepath}")
-    
+
     status_filepath = os.path.join(UPLOAD_FOLDER, f"{task_id}.status")
     output_filepath = "" # Will be set after processing
 
     try:
-        # --- Re-initialize API client and header for the thread ---
-        # This is important because Zeep clients might not be thread-safe
-        # or might rely on thread-local data.
-        
-        # Simulate getting a new client and header (as in process_file_route)
-        # For simplicity, we pass credentials_dict and wsdl_url
-        # In a more robust system, you might have a thread-safe way to get clients/headers
-        
-        # For this example, let's assume we can re-use the core logic by passing client/header
-        # or by re-creating them. Re-creating is safer for threads.
-        
         thread_tebra_client = create_api_client_adapted(wsdl_url)
         if not thread_tebra_client:
             raise Exception("Background task: Failed to connect to Tebra API.")
-        
+
         thread_tebra_header = build_request_header_adapted(credentials_dict, thread_tebra_client)
         if not thread_tebra_header:
             raise Exception("Background task: Failed to build Tebra API request header.")
 
-        # --- Read the saved file and process ---
-        with open(input_filepath, 'rb') as f_stream: # Read the saved uploaded file
-            # We need to pass a file-like object to validate_spreadsheet_adapted
-            # For this, we can use io.BytesIO if validate_spreadsheet_adapted expects it
-            # Or, if validate_spreadsheet_adapted can take a filepath, adjust accordingly.
-            # Assuming it takes a stream:
+        with open(input_filepath, 'rb') as f_stream:
             file_stream_for_validation = io.BytesIO(f_stream.read())
 
-        # Validate the spreadsheet (using the stream from the saved file)
-        # Assuming original_filename isn't strictly needed by validate_spreadsheet_adapted for validation itself,
-        # or pass a placeholder if it is.
-        df, actual_column_headers_map, validation_errors = validate_spreadsheet_adapted(file_stream_for_validation, "uploaded_file.xlsx") # Pass a generic name
+        df, actual_column_headers_map, validation_errors = validate_spreadsheet_adapted(file_stream_for_validation, "uploaded_file.xlsx")
         file_stream_for_validation.close()
 
         if df is None or validation_errors:
             raise Exception(f"Background task: File validation failed: {'; '.join(validation_errors)}")
 
         processed_df, summary_stats_from_processing = run_all_phases_processing_adapted(df, actual_column_headers_map, thread_tebra_client, thread_tebra_header)
-        
+
         # --- Save the processed file ---
-        # Use task_id for a unique output filename to avoid collisions
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_output_filename = os.path.splitext(original_filename_for_download)[0] # Get original name without extension
+        base_output_filename = os.path.splitext(original_filename_for_download)[0]
         processed_filename_for_server = f"Processed_{base_output_filename}_{task_id}_{timestamp}.xlsx"
         output_filepath = os.path.join(UPLOAD_FOLDER, processed_filename_for_server)
 
-        if 'original_excel_row_num' in processed_df.columns:
-            processed_df_to_save = processed_df.drop(columns=['original_excel_row_num'], errors='ignore')
-        else:
-            processed_df_to_save = processed_df
-        
-        processed_df_to_save.to_excel(output_filepath, index=False)
-        display_message("info", f"[Task {task_id}] ✅ Processed data saved to '{output_filepath}'")
+        processed_df_to_save = processed_df.drop(columns=['original_excel_row_num'], errors='ignore')
 
-        # Write success status
+        # >>> MODIFICATION: Excel formatting logic
+        display_message("info", f"[Task {task_id}] Applying final formatting to output Excel file...")
+
+        # Get actual column names for formatting
+        patient_id_col = actual_column_headers_map.get("Patient ID", "Patient ID")
+        payment_col = actual_column_headers_map.get("Patient Payment", "Patient Payment")
+        pos_col = actual_column_headers_map.get("POS", "POS")
+        units_col = actual_column_headers_map.get("Units", "Units")
+        charge_col = actual_column_headers_map.get("Charge Amount", "Charge Amount")
+        encounter_id_col = actual_column_headers_map.get("Encounter ID", "Encounter ID")
+        dos_col = actual_column_headers_map.get("DOS", "DOS")
+
+        # Convert data types for numeric columns
+        numeric_cols = [patient_id_col, pos_col, units_col, encounter_id_col, payment_col, charge_col]
+        for col in numeric_cols:
+            if col in processed_df_to_save.columns:
+                processed_df_to_save[col] = pd.to_numeric(processed_df_to_save[col], errors='coerce')
+
+        # Convert DOS to datetime objects for correct Excel formatting
+        if dos_col in processed_df_to_save.columns:
+            processed_df_to_save[dos_col] = pd.to_datetime(processed_df_to_save[dos_col], errors='coerce')
+
+        # Use XlsxWriter engine to apply formats
+        with pd.ExcelWriter(output_filepath, engine='xlsxwriter',
+                              date_format='mm-dd-yyyy',
+                              datetime_format='mm-dd-yyyy') as writer:
+            processed_df_to_save.to_excel(writer, sheet_name='Charges', index=False)
+            
+            workbook = writer.book
+            worksheet = writer.sheets['Charges']
+            
+            # Create currency format
+            currency_format = workbook.add_format({'num_format': '$#,##0.00'})
+            
+            # Get column indices and apply currency format
+            header_list = processed_df_to_save.columns.values.tolist()
+            currency_cols_to_format = [payment_col, charge_col]
+            for col_name in currency_cols_to_format:
+                if col_name in header_list:
+                    col_idx = header_list.index(col_name)
+                    # The set_column format applies to the whole column.
+                    # Syntax: set_column(first_col, last_col, width, cell_format)
+                    worksheet.set_column(col_idx, col_idx, 18, currency_format)
+
+        display_message("info", f"[Task {task_id}] ✅ Processed data saved with formatting to '{output_filepath}'")
+
         with open(status_filepath, 'w') as f_status:
             json.dump({"status": "completed", "output_filename": processed_filename_for_server, "original_download_name": f"Processed_{base_output_filename}_{timestamp}.xlsx"}, f_status)
         display_message("info", f"[Task {task_id}] Status file written: completed")
@@ -159,12 +248,10 @@ def background_task_processor(input_filepath, task_id, credentials_dict, wsdl_ur
         display_message("error", f"[Task {task_id}] Error during background processing: {e}")
         tb_str = traceback.format_exc()
         display_message("error", f"[Task {task_id}] Traceback: {tb_str}")
-        # Write error status
         with open(status_filepath, 'w') as f_status:
             json.dump({"status": "error", "message": str(e)}, f_status)
         display_message("info", f"[Task {task_id}] Status file written: error")
     finally:
-        # Clean up the original uploaded temp file for this task
         if os.path.exists(input_filepath):
             try:
                 os.remove(input_filepath)
@@ -214,9 +301,11 @@ EXPECTED_COLUMNS_CONFIG = {
     "Diag 4": {"normalized": "diag 4", "is_critical_input": False, "purpose": "Input for Phase 3 (Diagnosis Code 4, optional)"},
 
     # Phase 3 Outputs (Script writes to these columns)
+    # Phase 3 Outputs (Script writes to these columns)
     "Charge Amount": {"normalized": "charge amount", "is_critical_input": False, "purpose": "Output for Phase 3 (Fetched Encounter Charge Amount)"},
     "Charge Status": {"normalized": "charge status", "is_critical_input": False, "purpose": "Output for Phase 3 (Fetched Encounter Status)"},
     "Encounter ID": {"normalized": "encounter id", "is_critical_input": False, "purpose": "Output for Phase 3 (Created Encounter ID)"},
+    "Results/Error": {"normalized": "results/error", "is_critical_input": False, "purpose": "Output for consolidated status messages and errors"},
 }
 
 def normalize_header_name_adapted(header_name): #
@@ -225,92 +314,114 @@ def normalize_header_name_adapted(header_name): #
         return ""
     return ' '.join(str(header_name).lower().strip().split()) #
 
-def validate_spreadsheet_adapted(file_stream, filename_str): #
-    df_temp = None
-    actual_column_headers_map = {} #
-    error_messages = []
-    target_sheet_name = "Charges" # Process only this sheet as per tebra_automation_tool_v2.py
-
-    for config_item in EXPECTED_COLUMNS_CONFIG.values(): #
-        config_item["actual_header_found"] = None
-
-    display_message("info", f"Processing uploaded file stream for: '{filename_str}'")
-
+def validate_spreadsheet_adapted(file_stream, filename_for_logging):
+    """
+    Validates the uploaded spreadsheet.
+    Dynamically finds the correct sheet by looking for a 'Patient ID' column.
+    Checks for critical columns, handles specific template formats, and builds a map of column names.
+    """
+    display_message("info", f"Processing uploaded file stream for: '{filename_for_logging}'")
+    validation_errors = []
+    df = None
+    
+    # --- New Dynamic Sheet Detection Logic ---
+    target_sheet = None
     try:
-        if filename_str.lower().endswith(('.xlsx', '.xls')): #
-            display_message("info", f"Attempting to read '{target_sheet_name}' tab from Excel file (first row should be headers)...")
-            xls = pd.ExcelFile(file_stream)
-            if target_sheet_name not in xls.sheet_names:
-                error_messages.append(f"CRITICAL: Target sheet '{target_sheet_name}' not found in '{filename_str}'. Available sheets: {xls.sheet_names}. Please ensure your Excel file contains a sheet named 'Charges'.")
-                return None, {}, error_messages
-            # Read all data as strings to preserve formatting like leading zeros
-            df_temp = pd.read_excel(xls, sheet_name=target_sheet_name, dtype=str, keep_default_na=True) #
-        else:
-            error_messages.append(f"Unsupported file type: '{filename_str}'. Please upload an XLSX or XLS file.") #
-            return None, {}, error_messages
+        if not filename_for_logging.lower().endswith(('.xlsx', '.xls')):
+            validation_errors.append(f"Unsupported file type: '{filename_for_logging}'. Please upload an XLSX or XLS file.")
+            return None, {}, validation_errors
 
-        display_message("info", f"Successfully read '{target_sheet_name}' tab from '{filename_str}'. Initial columns found: {df_temp.columns.tolist()}")
+        xls = pd.ExcelFile(file_stream)
+        sheet_names = xls.sheet_names
+        
+        critical_header_to_find = "patient id"
+        display_message("info", f"Scanning sheets {sheet_names} for a '{critical_header_to_find}' column...")
 
-        if not df_temp.empty: #
-            first_cell_first_data_row = str(df_temp.iloc[0, 0]).lower() #
+        for sheet in sheet_names:
+            try:
+                header_df = pd.read_excel(xls, sheet_name=sheet, nrows=0)
+                normalized_columns = [str(col).strip().lower() for col in header_df.columns]
+                if critical_header_to_find in normalized_columns:
+                    target_sheet = sheet
+                    display_message("info", f"✅ Found target data in sheet: '{target_sheet}'. This sheet will be processed.")
+                    break
+            except Exception as e:
+                display_message("warning", f"Could not read or process header of sheet '{sheet}'. Skipping. Error: {e}")
+                continue
+
+        if not target_sheet:
+            validation_errors.append(f"CRITICAL: No sheet containing the required '{critical_header_to_find}' column was found in '{filename_for_logging}'. Available sheets: {sheet_names}.")
+            return None, None, validation_errors
+
+        # Read all data as strings from the identified target sheet to preserve formatting
+        df = pd.read_excel(xls, sheet_name=target_sheet, dtype=str, keep_default_na=True)
+        display_message("info", f"Successfully read '{target_sheet}' tab from '{filename_for_logging}'. Initial columns found: {df.columns.tolist()}")
+
+        # --- Keep Your Specific Validation Logic ---
+        if not df.empty:
+            # Check for and skip a descriptive first data row
+            first_cell_first_data_row = str(df.iloc[0, 0]).lower()
             if "script will read this from excel" in first_cell_first_data_row or \
-               ("practice" == first_cell_first_data_row and len(df_temp.columns) > 1 and "patient id" == str(df_temp.iloc[0,1]).lower()): #
-                display_message("info", "Detected and skipping a descriptive first data row (assuming actual headers are used by pandas).") #
-                df_temp = df_temp.iloc[1:].reset_index(drop=True) #
+               ("practice" == first_cell_first_data_row and len(df.columns) > 1 and "patient id" == str(df.iloc[0,1]).lower()):
+                display_message("info", "Detected and skipping a descriptive first data row.")
+                df = df.iloc[1:].reset_index(drop=True)
 
-        display_message("info", f"DataFrame ready for validation. Found {len(df_temp.columns)} columns and {len(df_temp)} data rows from '{target_sheet_name}' tab.") #
-        if df_temp.empty and len(df_temp.columns) == 0 : #
-             error_messages.append(f"The '{target_sheet_name}' tab appears to be empty or has no columns after initial read.")
-             return None, {}, error_messages
-        elif df_temp.empty: # Has columns but no data rows
-             display_message("warning", f"The '{target_sheet_name}' tab contains headers but no actual data rows. Column validation will proceed.")
-    except Exception as e: #
-        error_messages.append(f"Error reading or initially processing file '{filename_str}': {e}") #
-        return None, {}, error_messages
+        display_message("info", f"DataFrame ready for validation. Found {len(df.columns)} columns and {len(df)} data rows from '{target_sheet}' tab.")
+        
+        if df.empty and len(df.columns) == 0 :
+            validation_errors.append(f"The '{target_sheet}' tab appears to be empty or has no columns after initial read.")
+            return None, {}, validation_errors
+        elif df.empty:
+            display_message("warning", f"The '{target_sheet}' tab contains headers but no actual data rows. Column validation will proceed.")
 
-    actual_headers_from_file = df_temp.columns.tolist() #
-    normalized_headers_map_from_file = {normalize_header_name_adapted(h): h for h in actual_headers_from_file} #
+    except Exception as e:
+        validation_errors.append(f"Error reading or initially processing file '{filename_for_logging}': {e}")
+        return None, {}, validation_errors
 
-    missing_critical_inputs = [] #
-    found_all_critical = True #
+    # --- Keep Your Column Mapping and Critical Check Logic ---
+    actual_column_headers_map = {}
+    actual_headers_from_file = df.columns.tolist()
+    # Assuming normalize_header_name_adapted exists elsewhere in your file
+    normalized_headers_map_from_file = {normalize_header_name_adapted(h): h for h in actual_headers_from_file}
 
-    for logical_name, config in EXPECTED_COLUMNS_CONFIG.items(): #
-        normalized_expected = config["normalized"] #
-        actual_header_found_in_file = normalized_headers_map_from_file.get(normalized_expected) #
+    missing_critical_inputs = []
+    found_all_critical = True
 
-        if actual_header_found_in_file: #
-            actual_column_headers_map[logical_name] = actual_header_found_in_file #
-            config["actual_header_found"] = actual_header_found_in_file #
-        elif config["is_critical_input"]: #
-            missing_critical_inputs.append(f"'{logical_name}' (expected normalized: '{normalized_expected}')") #
-            found_all_critical = False #
-        else: # Not critical and not found, will map logical name to itself for potential creation #
-            actual_column_headers_map[logical_name] = logical_name #
+    for logical_name, config in EXPECTED_COLUMNS_CONFIG.items():
+        normalized_expected = config["normalized"]
+        actual_header_found_in_file = normalized_headers_map_from_file.get(normalized_expected)
 
+        if actual_header_found_in_file:
+            actual_column_headers_map[logical_name] = actual_header_found_in_file
+        elif config["is_critical_input"]:
+            missing_critical_inputs.append(f"'{logical_name}'")
+            found_all_critical = False
+        else:
+            actual_column_headers_map[logical_name] = logical_name
 
-    if not found_all_critical: #
-        error_messages.append(f"CRITICAL INPUT COLUMNS ARE MISSING OR MISMATCHED in the '{target_sheet_name}' tab:") #
-        for col_detail in missing_critical_inputs: #
-            error_messages.append(f"  - {col_detail} - Not found in file's normalized headers.") #
-        return None, actual_column_headers_map, error_messages
+    if not found_all_critical:
+        validation_errors.append(f"CRITICAL INPUT COLUMNS ARE MISSING OR MISMATCHED in the '{target_sheet}' tab: {', '.join(sorted(missing_critical_inputs))}")
+        return None, actual_column_headers_map, validation_errors
 
-    display_message("info", f"All critical input columns found and mapped successfully from '{target_sheet_name}' tab.") #
+    display_message("info", f"All critical input columns found and mapped successfully from '{target_sheet}' tab.")
 
-    output_columns_to_ensure = { #
-        "Patient Name": "Patient Name", "DOB": "DOB", "Insurance": "Insurance", #
-        "Insurance ID": "Insurance ID", "Insurance Status": "Insurance Status", #
-        "Charge Amount": "Charge Amount", "Charge Status": "Charge Status", #
-        "Encounter ID": "Encounter ID", "Error": "Error" #
+    # --- Keep Your Output Column Creation Logic ---
+    output_columns_to_ensure = {
+        "Patient Name": "Patient Name", "DOB": "DOB", "Insurance": "Insurance", 
+        "Insurance ID": "Insurance ID", "Insurance Status": "Insurance Status", 
+        "Charge Amount": "Charge Amount", "Charge Status": "Charge Status", 
+        "Encounter ID": "Encounter ID", "Results/Error": "Results/Error" 
     }
 
-    for logical_output_name, default_col_name in output_columns_to_ensure.items(): #
-        actual_col_name_to_use = actual_column_headers_map.get(logical_output_name, default_col_name) #
-        if actual_col_name_to_use not in df_temp.columns: #
-            df_temp[actual_col_name_to_use] = "" # Initialize empty for strings #
-            display_message("info", f"Output column '{actual_col_name_to_use}' (for {logical_output_name}) added to DataFrame.") #
-        elif logical_output_name == "Error": # Ensure "Error" column is cleared for new run #
-             df_temp[actual_col_name_to_use] = "" #
-    return df_temp, actual_column_headers_map, error_messages
+    for logical_output_name, default_col_name in output_columns_to_ensure.items():
+        actual_col_name_to_use = actual_column_headers_map.get(logical_output_name, default_col_name)
+        if actual_col_name_to_use not in df.columns:
+            df[actual_col_name_to_use] = "" # Initialize empty for strings
+            display_message("info", f"Output column '{actual_col_name_to_use}' (for {logical_output_name}) added to DataFrame.")
+        elif logical_output_name == "Results/Error": # Clear "Results/Error" column for new run
+            df[actual_col_name_to_use] = ""
+            
+    return df, actual_column_headers_map, validation_errors
 
 
 # --- 🛠️ PART 4: Core Utility Functions (Adapted from Colab) ---
@@ -1358,60 +1469,82 @@ def _create_encounter_for_group_and_get_details(
 
 
 def run_all_phases_processing_adapted(df_param, actual_headers_map_param, tebra_client_param, tebra_header_param):
-    # (This function is taken directly from your Flask app's user.py, with the P1/P2 loop restored
-    #  and ensuring it passes the new referring_provider_cache_param to _create_encounter_for_group_and_get_details)
-
-    # Initialize caches locally for this processing run for thread safety / request isolation
-    # This is from your Flask user.py and is a good approach.
-    g_practice_id_cache_local = {} 
-    g_service_location_id_cache_local = {} 
+    # Initialize local caches for this processing run for thread safety
+    g_practice_id_cache_local = {}
+    g_service_location_id_cache_local = {}
     g_provider_id_cache_local = {} # For Rendering/Scheduling providers
     g_referring_provider_cache_local = {} # For Referring providers
-    g_patient_case_id_cache_local = {} 
-
+    g_patient_case_id_cache_local = {}
     display_message("info", "Local caches initialized for this processing request.")
 
     if 'original_excel_row_num' not in df_param.columns:
         df_param['original_excel_row_num'] = df_param.index + 2
 
+    # Initialize all output columns to ensure they exist
     output_cols_to_init = {
         "Patient Name": pd.NA, "DOB": pd.NA, "Insurance": pd.NA, "Insurance ID": pd.NA, "Insurance Status": pd.NA,
-        "Encounter ID": pd.NA, "Charge Amount": pd.NA, "Charge Status": pd.NA, "Error": "" 
+        "Encounter ID": pd.NA, "Charge Amount": pd.NA, "Charge Status": pd.NA, "Results/Error": ""
     }
     for logical_col_name, default_val in output_cols_to_init.items():
         actual_col_name = actual_headers_map_param.get(logical_col_name, logical_col_name)
-        if actual_col_name not in df_param.columns: df_param[actual_col_name] = default_val
-        else: df_param[actual_col_name] = default_val
-            
+        if actual_col_name not in df_param.columns:
+            df_param[actual_col_name] = default_val
+        else: # Clear existing data
+            df_param[actual_col_name] = default_val
+
+    # Get actual column names from the map
+    practice_col = actual_headers_map_param.get("Practice", "Practice")
+    rendering_prov_col = actual_headers_map_param.get("Rendering Provider", "Rendering Provider")
+    scheduling_prov_col = actual_headers_map_param.get("Scheduling Provider", "Scheduling Provider")
+    referring_prov_col = actual_headers_map_param.get("Referring Provider", "Referring Provider")
+
+    # >>> MODIFICATION: Normalize Practice and Provider names before any processing
+    display_message("info", "Normalizing Practice and Provider names...")
+    if practice_col in df_param.columns:
+        df_param[practice_col] = df_param[practice_col].apply(normalize_practice_name)
+    if rendering_prov_col in df_param.columns:
+        df_param[rendering_prov_col] = df_param[rendering_prov_col].apply(normalize_provider_name)
+    if scheduling_prov_col in df_param.columns:
+        df_param[scheduling_prov_col] = df_param[scheduling_prov_col].apply(normalize_provider_name)
+    if referring_prov_col in df_param.columns:
+        df_param[referring_prov_col] = df_param[referring_prov_col].apply(normalize_provider_name)
+    display_message("info", "✅ Normalization complete.")
+
+
     if '_PaymentID_Temp' not in df_param.columns: df_param['_PaymentID_Temp'] = pd.NA
     else: df_param['_PaymentID_Temp'] = pd.NA
 
-    display_message("info", "--- Running Phases 1 (Patient/Insurance) & 2 (Payment Posting) per row (Adapted for Flask) ---")
-    # (Full P1/P2 loop structure from your user.py, ensuring it uses tebra_client_param, tebra_header_param, and local caches)
+    display_message("info", "--- Running Phases 1 (Patient/Insurance) & 2 (Payment Posting) per row ---")
     for index, row_data in df_param.iterrows():
-        current_row_messages = [] 
+        current_row_messages = []
         payment_id_for_row = pd.NA
         log_prefix_row = f"DF_Row {index} (OrigExcelRow {row_data.get('original_excel_row_num', index+2)})"
         try:
-            patient_id_col = actual_headers_map_param.get("Patient ID"); practice_col = actual_headers_map_param.get("Practice"); dos_col = actual_headers_map_param.get("DOS")
+            patient_id_col = actual_headers_map_param.get("Patient ID"); dos_col = actual_headers_map_param.get("DOS")
             patient_id_str = str(row_data.get(patient_id_col, "")).strip(); practice_name_excel_str = str(row_data.get(practice_col, "")).strip(); dos_for_insurance_str = str(row_data.get(dos_col, "")).strip()
             if not patient_id_str or not practice_name_excel_str:
                 msg = "Skipped (Ph1/2): Patient ID or Practice Name missing."; current_row_messages.append(msg)
-                df_param.loc[index, actual_headers_map_param.get("Error", "Error")] = "; ".join(filter(None, current_row_messages)).strip('; '); continue
-            p1_status_msg = ""; patient_name_output_col = actual_headers_map_param.get("Patient Name", "Patient Name")
+                df_param.loc[index, actual_headers_map_param.get("Results/Error", "Results/Error")] = "; ".join(filter(None, current_row_messages)).strip('; '); continue
+
             try:
-                insurance_results = phase1_fetch_patient_and_insurance(tebra_client_param, tebra_header_param, patient_id_str, practice_name_excel_str, dos_for_insurance_str) # Uses adapted client/header
-                
-                # Update all relevant DataFrame columns with Phase 1 results
-                df_param.loc[index, patient_name_output_col] = insurance_results.get('FetchedPatientName')
+                insurance_results = phase1_fetch_patient_and_insurance(tebra_client_param, tebra_header_param, patient_id_str, practice_name_excel_str, dos_for_insurance_str)
+                df_param.loc[index, actual_headers_map_param.get("Patient Name", "Patient Name")] = insurance_results.get('FetchedPatientName')
                 df_param.loc[index, actual_headers_map_param.get("DOB", "DOB")] = insurance_results.get('FetchedPatientDOB')
                 df_param.loc[index, actual_headers_map_param.get("Insurance", "Insurance")] = insurance_results.get('FetchedInsuranceName')
                 df_param.loc[index, actual_headers_map_param.get("Insurance ID", "Insurance ID")] = insurance_results.get('FetchedInsuranceID')
                 df_param.loc[index, actual_headers_map_param.get("Insurance Status", "Insurance Status")] = insurance_results.get('FetchedInsuranceStatus')
-                
-                if insurance_results.get('SimpleError'): p1_status_msg = f"P1 Error: {insurance_results['SimpleError']}"
-                elif insurance_results.get('FetchedInsuranceStatus') not in ["Active", "Active (Primary)", "Multiple Active Found", None, "", "Ins. Check Skipped (No Valid DOS)"]: p1_status_msg = f"P1 Status: {insurance_results.get('FetchedInsuranceStatus', 'Ins status unknown')}"
-                if p1_status_msg: current_row_messages.append(p1_status_msg)
+
+                # >>> MODIFICATION: Refined error message logic
+                p1_status_msg = ""
+                if insurance_results.get('SimpleError'):
+                    p1_status_msg = f"P1 Error: {insurance_results['SimpleError']}"
+                # Add status message ONLY if it's an unexpected status. Benign statuses already reflected in the 'Insurance Status' column are ignored.
+                elif insurance_results.get('FetchedInsuranceStatus') not in ["Active", "Active (Primary)", "Multiple Active Found", None, "", "Ins. Check Skipped (No Valid DOS)", "No Ins. Policies on Primary Case", "No Case Data for Ins. Check", "Patient Not Found", "No Ins. Policies on Primary Case"]:
+                    p1_status_msg = f"P1 Status: {insurance_results.get('FetchedInsuranceStatus', 'Ins status unknown')}"
+
+                if p1_status_msg:
+                    current_row_messages.append(p1_status_msg)
+
             except Exception as e1_proc: p1_status_msg = f"P1 System Error: {e1_proc.__class__.__name__}"; current_row_messages.append(p1_status_msg); display_message("error", f"{log_prefix_row}: {p1_status_msg} - {e1_proc}")
             p2_status_msg = ""
             try:
@@ -1432,24 +1565,19 @@ def run_all_phases_processing_adapted(df_param, actual_headers_map_param, tebra_
                     else: p2_status_msg = f"P2 Error: Tebra Practice ID for '{practice_name_excel_str}' (payment) not found."; current_row_messages.append(p2_status_msg)
             except Exception as e2_proc: p2_status_msg = f"P2 System Error: {e2_proc.__class__.__name__}"; current_row_messages.append(p2_status_msg); display_message("error", f"{log_prefix_row}: {p2_status_msg} - {e2_proc}")
             df_param.loc[index, '_PaymentID_Temp'] = payment_id_for_row
-            error_col_name = actual_headers_map_param.get('Error', 'Error'); df_param.loc[index, error_col_name] = "; ".join(filter(None, current_row_messages)).strip('; ')
+            error_col_name = actual_headers_map_param.get('Results/Error', 'Results/Error'); df_param.loc[index, error_col_name] = "; ".join(filter(None, current_row_messages)).strip('; ')
         except Exception as e_outer_row:
-            error_col_name = actual_headers_map_param.get('Error', 'Error')
+            error_col_name = actual_headers_map_param.get('Results/Error', 'Results/Error')
             display_message("critical", f"CRITICAL ERROR processing DF_Row {index} in P1/P2 loop: {e_outer_row}")
             if error_col_name in df_param.columns : df_param.loc[index, error_col_name] = f"Outer Row Proc Err: {e_outer_row.__class__.__name__}"
-            else: df_param.loc[index, 'Error'] = f"Outer Row Proc Err: {e_outer_row.__class__.__name__}"
+            else: df_param.loc[index, 'Results/Error'] = f"Outer Row Proc Err: {e_outer_row.__class__.__name__}"
 
     display_message("info", "--- Phases 1 & 2 row-by-row processing complete. ---")
     display_message("info", "--- Starting Phase 3 (Encounter Creation - Grouped) ---")
     
-    # Phase 3 Grouping Logic (from your user.py, ensure it uses adapted client, header and local caches)
-    # ... (This is the existing Phase 3 grouping loop structure from your user.py script)
-    # The key is that inside this loop, when _create_encounter_for_group_and_get_details is called,
-    # it passes tebra_client_param, tebra_header_param, and the local caches.
-    patient_id_col = actual_headers_map_param.get("Patient ID"); dos_col = actual_headers_map_param.get("DOS"); practice_excel_col = actual_headers_map_param.get("Practice"); patient_name_col = actual_headers_map_param.get("Patient Name") 
-    if not all([patient_id_col, dos_col, practice_excel_col, patient_name_col]): # ... (critical check as before)
+    patient_id_col = actual_headers_map_param.get("Patient ID"); dos_col = actual_headers_map_param.get("DOS"); practice_excel_col = actual_headers_map_param.get("Practice"); patient_name_col = actual_headers_map_param.get("Patient Name")
+    if not all([patient_id_col, dos_col, practice_excel_col, patient_name_col]):
         error_msg_critical = "CRITICAL: Key column names for grouping not mapped. Cannot proceed with Phase 3."
-        # ... (error handling and return as in your user.py)
         summary_for_critical_failure = {"total_rows": len(df_param), "encounters_created": 0, "payments_posted": 0, "failed_rows": len(df_param), "results": [{"row_number": idx + 2, "practice_name": "", "patient_id": "", "results": error_msg_critical} for idx, row in df_param.iterrows()]}
         return df_param, summary_for_critical_failure
 
@@ -1467,46 +1595,45 @@ def run_all_phases_processing_adapted(df_param, actual_headers_map_param, tebra_
             log_prefix_grp = f"EncGrp {group_counter}/{len(grouped_for_encounter)}"
             display_message("info", f"Processing {log_prefix_grp} - PtID: {patient_id_grp}, DOS: {dos_grp}, PracFromExcel: {practice_name_excel_grp} ({len(group_indices)} rows)")
             if not patient_full_name_grp :
-                error_msg = "P3 Error: Patient Full Name missing for group."; 
-                for idx_in_group in group_indices: df_param.loc[idx_in_group, actual_headers_map_param.get("Error", "Error")] = f"{str(df_param.loc[idx_in_group, actual_headers_map_param.get('Error', 'Error')]).strip('; ')}; {error_msg}".strip('; ')
+                error_msg = "P3 Error: Patient Full Name missing for group.";
+                for idx_in_group in group_indices: df_param.loc[idx_in_group, actual_headers_map_param.get("Results/Error", "Results/Error")] = f"{str(df_param.loc[idx_in_group, actual_headers_map_param.get('Results/Error', 'Results/Error')]).strip('; ')}; {error_msg}".strip('; ')
                 continue
-            tebra_practice_id_for_enc_payload = get_practice_id_by_name(tebra_client_param, tebra_header_param, practice_name_excel_grp, g_practice_id_cache_local) # Use local cache
+            tebra_practice_id_for_enc_payload = get_practice_id_by_name(tebra_client_param, tebra_header_param, practice_name_excel_grp, g_practice_id_cache_local)
             if not tebra_practice_id_for_enc_payload:
-                error_msg = f"P3 Error: Tebra Practice ID for '{practice_name_excel_grp}' (enc) not found."; 
-                for idx_in_group in group_indices: df_param.loc[idx_in_group, actual_headers_map_param.get("Error", "Error")] = f"{str(df_param.loc[idx_in_group, actual_headers_map_param.get('Error', 'Error')]).strip('; ')}; {error_msg}".strip('; ')
+                error_msg = f"P3 Error: Tebra Practice ID for '{practice_name_excel_grp}' (enc) not found.";
+                for idx_in_group in group_indices: df_param.loc[idx_in_group, actual_headers_map_param.get("Results/Error", "Results/Error")] = f"{str(df_param.loc[idx_in_group, actual_headers_map_param.get('Results/Error', 'Results/Error')]).strip('; ')}; {error_msg}".strip('; ')
                 continue
-            
-            # CALLING THE MODIFIED FUNCTION
+
             p3_results = _create_encounter_for_group_and_get_details(
-                tebra_client_param, tebra_header_param, group_keys, current_group_df_slice, 
+                tebra_client_param, tebra_header_param, group_keys, current_group_df_slice,
                 tebra_practice_id_for_enc_payload, patient_full_name_grp, log_prefix_grp,
-                actual_headers_map_param, # Pass the map
-                g_service_location_id_cache_local, # Pass local caches
+                actual_headers_map_param,
+                g_service_location_id_cache_local,
                 g_patient_case_id_cache_local,
                 g_provider_id_cache_local,
-                g_referring_provider_cache_local # Pass new cache
+                g_referring_provider_cache_local
             )
-            for idx_in_group in group_indices: # Update group rows...
+            for idx_in_group in group_indices:
                 df_param.loc[idx_in_group, actual_headers_map_param.get("Encounter ID", "Encounter ID")] = p3_results.get('EncounterID')
                 df_param.loc[idx_in_group, actual_headers_map_param.get("Charge Amount", "Charge Amount")] = p3_results.get('ChargeAmount')
                 df_param.loc[idx_in_group, actual_headers_map_param.get("Charge Status", "Charge Status")] = p3_results.get('ChargeStatus')
-                existing_errors_str = str(df_param.loc[idx_in_group, actual_headers_map_param.get('Error', 'Error')]).strip()
+                existing_errors_str = str(df_param.loc[idx_in_group, actual_headers_map_param.get('Results/Error', 'Results/Error')]).strip()
                 all_msgs = [m.strip() for m in existing_errors_str.split(';') if m.strip()] if existing_errors_str else []
                 p3_simple = p3_results.get('SimpleMessage', "P3 status unknown.")
                 if p3_simple:
                     is_created = p3_results.get('EncounterID') and f"Encounter #{p3_results.get('EncounterID')}" in p3_simple
                     has_created = any(f"Encounter #{p3_results.get('EncounterID')}" in m for m in all_msgs if p3_results.get('EncounterID'))
                     if not (is_created and has_created): all_msgs.append(p3_simple.strip())
-                df_param.loc[idx_in_group, actual_headers_map_param.get("Error", "Error")] = "; ".join(filter(None, all_msgs)).strip('; ')
+                df_param.loc[idx_in_group, actual_headers_map_param.get("Results/Error", "Results/Error")] = "; ".join(filter(None, all_msgs)).strip('; ')
 
     if '_PaymentID_Temp' in df_param.columns: df_param.drop(columns=['_PaymentID_Temp'], inplace=True, errors='ignore')
     display_message("info", "🏁 All phases processing completed.")
-    
-    # --- Summary Stats (from your user.py) ---
+
+    # --- Summary Stats ---
     total_rows = len(df_param)
     enc_id_col_actual = actual_headers_map_param.get("Encounter ID", "Encounter ID")
     encounters_created = df_param[enc_id_col_actual].notna().sum() if enc_id_col_actual in df_param.columns else 0
-    error_col_actual = actual_headers_map_param.get("Error", "Error")
+    error_col_actual = actual_headers_map_param.get("Results/Error", "Results/Error")
     payments_posted_series = df_param[error_col_actual].astype(str).str.contains(r"Payment #\w+ Posted", na=False, regex=True)
     payments_posted = payments_posted_series.sum()
     failed_conditions = (df_param[error_col_actual].astype(str).str.contains("Error|Failed|Skipped", case=False, na=False, regex=True) & \
@@ -1516,7 +1643,7 @@ def run_all_phases_processing_adapted(df_param, actual_headers_map_param, tebra_
     results_for_json = []
     practice_name_col = actual_headers_map_param.get("Practice", "Practice")
     patient_id_col = actual_headers_map_param.get("Patient ID", "Patient ID")
-    def clean_for_json(value, default_val=""): # Renamed 'default' to 'default_val'
+    def clean_for_json(value, default_val=""):
         if pd.isna(value) or value is None: return None
         return str(value)
     for index_json, row_json in df_param.iterrows():
